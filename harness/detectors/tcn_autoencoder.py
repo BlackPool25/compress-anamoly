@@ -13,7 +13,23 @@ TAU KEY (frozen, Todo 8 wires it): ``tau_TCN`` = p99 of
 ``TCNAutoencoder.score(R0-train)`` per (seed, dataset), reused across ALL
 codecs, never recomputed per codec. Train-once-reuse across codecs is
 Todo 9's job; this module delivers the single-train ``fit``/``score``
-contract: ``fit`` on R0-train ONLY.
+contract: ``fit`` on R0-train ONLY. Calibrate with
+``harness.metrics.frozen_evaluator.calibrate_frozen_threshold`` (default
+p99, mirroring PCA/IF) — NOT the D4 max-tau rule from Todo 6.
+
+STAIRCASE-SCALE-SHIFT CAVEAT: coarse quantization (Q4/Q2) replaces smooth
+nominal segments with piecewise-constant staircases. The TCN trained on
+smooth R0-train reconstructs the smooth manifold, so quantization steps
+inflate nominal window SSE vs R0 (Drift pilot: mean Q4 nominal residual >
+mean R0 on all seeds 42-46). Under the frozen R0 tau this surfaces as
+extra false positives on quantized codecs — the H2 mechanism, documented
+not fixed: tau stays frozen, never retuned per codec.
+
+TRAIN-WINDOW CAP (frozen subsample, Todo 8): UCR trains yield ~32k
+windows, over budget. ``fit`` keeps at most ``MAX_TRAIN_WINDOWS`` windows
+via :func:`frozen_subsample_indices` — ``step = ceil(n_win / 4000)``,
+``offset = seed % step``, every ``step``-th window from ``offset`` — so
+every worker builds identical trains from (n_win, seed) alone.
 
 Determinism / versions (Context7-checked):
 - Context7 library ID: ``/pytorch/pytorch`` (resolved 2026-09-05).
@@ -48,6 +64,39 @@ MAX_EPOCHS: int = 10
 
 #: Hard param ceiling, asserted at init.
 MAX_PARAMS: int = 12_000
+
+#: Frozen train-window cap (Todo 8): ``fit`` keeps at most this many
+#: windows via :func:`frozen_subsample_indices`.
+MAX_TRAIN_WINDOWS: int = 4000
+
+
+def frozen_subsample_indices(
+    n_win: int, seed: int, cap: int = MAX_TRAIN_WINDOWS
+) -> np.ndarray:
+    """Frozen window-subsample indices: identical trains on every worker.
+
+    ``step = ceil(n_win / cap)``; ``offset = seed % step``; take every
+    ``step``-th window starting at ``offset``. Asserts
+    ``len == ceil((n_win - offset) / step)`` and ``len <= cap``.
+    At or under cap this is the identity (``step == 1``, ``offset == 0``).
+
+    Args:
+        n_win: Total window count (``n - w + 1``).
+        seed: Dataset seed; only ``seed % step`` enters the trains.
+        cap: Window ceiling (frozen at 4000).
+
+    Returns:
+        1-D intp index array into the window axis.
+    """
+    import math
+
+    n_win, seed, cap = int(n_win), int(seed), int(cap)
+    step = math.ceil(n_win / cap)
+    offset = seed % step
+    idx = np.arange(offset, n_win, step)
+    assert len(idx) == math.ceil((n_win - offset) / step)
+    assert len(idx) <= cap
+    return idx
 
 
 #: torch.set_num_interop_threads may be called only once per process.
@@ -172,7 +221,10 @@ class TCNAutoencoder(BaseDetector):
         # Reseed + rebuild so every fit from this seed is byte-identical.
         _apply_determinism(self.seed)
         self._net = _TCNNet().to(self.device)
-        t = self._windows(arr)
+        # Frozen subsample (Todo 8): identical capped trains per (n_win, seed).
+        idx = frozen_subsample_indices(w.shape[0], self.seed)
+        t = torch.from_numpy((w[idx] - self._mean) / self._std).float()
+        t = t[:, None, :].to(self.device)
         opt = torch.optim.Adam(self._net.parameters(), lr=self.lr)
         loss_fn = nn.MSELoss()
         self._net.train()

@@ -58,6 +58,7 @@ from harness.datasets.ucr_loader import SERIES_NAME, cache_path, load_series
 from harness.detectors.direct_symbolic import DirectSymbolicDetector
 from harness.detectors.isolation_forest import IsolationForestDetector
 from harness.detectors.pca_detector import PCADetector
+from harness.detectors.tcn_autoencoder import TCNAutoencoder
 from harness.metrics.frozen_evaluator import (
     calibrate_frozen_threshold,
     evaluate_event_f1,
@@ -156,16 +157,21 @@ def run_cell(dataset: str, seed: int, codecs: list[str]) -> list[dict]:
     iff = IsolationForestDetector(seed)
     iff.fit(x_train)
     tau_if = calibrate_frozen_threshold(iff.score(x_train))
-    taus = {"PCA": (pca, tau_pca), "IF": (iff, tau_if)}
+    # TCN (Todo 8): trained ONCE on the R0 train slice; tau_TCN = p99 of
+    # TCN.score(R0-train), the SAME object reused across all codecs below.
+    tcn = TCNAutoencoder(seed)
+    tcn.fit(x_train)
+    tau_tcn = calibrate_frozen_threshold(tcn.score(x_train))
+    taus = {"PCA": (pca, tau_pca), "IF": (iff, tau_if), "TCN": (tcn, tau_tcn)}
 
     r0 = LosslessCodec()
 
     def path_a(codec_name: str, payload: bytes, decoded: np.ndarray,
                raw_test: np.ndarray, labels: np.ndarray, ratio: float) -> None:
-        """Score one decode with PCA+IF under the frozen taus; append path-A rows."""
+        """Score one decode with PCA/IF/TCN under the frozen taus; append path-A rows."""
         dec = _align_len(decoded, raw_test.shape[0])
         rmse = _rmse(dec, raw_test)
-        for det_name in ("PCA", "IF"):
+        for det_name in ("PCA", "IF", "TCN"):
             if codec_name == "R4-decode" and det_name == "IF":
                 continue  # R4-decode->IF is NOT run
             det, tau = taus[det_name]
