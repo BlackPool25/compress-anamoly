@@ -185,12 +185,18 @@ def load_series(
     return parse_series(raw, series=name)
 
 
-def read_freeze_row(path: Path = FREEZE_PATH) -> dict[str, str]:
-    """Read and schema-validate the single ACTIVE UCR row of the freeze file.
+def read_freeze_rows(path: Path = FREEZE_PATH) -> list[dict[str, str]]:
+    """Read and schema-validate ALL ACTIVE rows of the freeze file.
 
-    ``# SUPERSEDED ...`` comment lines are skipped; exactly one live row with
-    the six EXACT columns ``series,url,sha256,bytes,license,split_rule`` must
-    remain.
+    ``# SUPERSEDED ...`` and other ``#`` comment lines are skipped; the
+    header must carry EXACTLY the six columns
+    ``series,url,sha256,bytes,license,split_rule`` and at least one live
+    row must remain. UCR rows sourced from the official archive zip share
+    one URL/SHA-256/bytes cell triple (the zip itself); the ``series`` cell
+    names the zip member (per-member bytes/hashes/split verdicts live in
+    the Todo 1 evidence log, since the six-column schema has no member
+    column). NASA rows pin one HF test ``.npy`` per channel; the sibling
+    train file is named in the row's ``split_rule`` for Todo 2's loader.
     """
     rows = [
         line.split(",")
@@ -202,21 +208,38 @@ def read_freeze_row(path: Path = FREEZE_PATH) -> dict[str, str]:
     if tuple(rows[0]) != FREEZE_COLUMNS:
         raise ValueError(f"freeze header mismatch: {rows[0]} != {list(FREEZE_COLUMNS)}")
     live = rows[1:]
-    if len(live) != 1:
-        raise ValueError(f"freeze file must hold exactly one ACTIVE row, got {len(live)}")
-    row = live[0]
-    if len(row) != len(FREEZE_COLUMNS):
-        raise ValueError(f"freeze row must have 6 columns, got {len(row)}: {row}")
-    return dict(zip(FREEZE_COLUMNS, row, strict=True))
+    if not live:
+        raise ValueError(f"freeze file holds no ACTIVE rows: {path}")
+    out: list[dict[str, str]] = []
+    for row in live:
+        if len(row) != len(FREEZE_COLUMNS):
+            raise ValueError(f"freeze row must have 6 columns, got {len(row)}: {row}")
+        out.append(dict(zip(FREEZE_COLUMNS, row, strict=True)))
+    return out
 
 
-def supersede_freeze_row(new_row: dict[str, str], path: Path = FREEZE_PATH) -> None:
-    """Mark the current ACTIVE row SUPERSEDED and pin a replacement ACTIVE row.
+def read_freeze_row(path: Path = FREEZE_PATH) -> dict[str, str]:
+    """Read the first ACTIVE UCR row of the freeze file (backward compat).
+
+    Kept working after the 1→12 migration by returning the first live row
+    instead of demanding exactly one; new code should prefer
+    ``read_freeze_rows``.
+    """
+    return read_freeze_rows(path)[0]
+
+
+def supersede_freeze_row(
+    new_row: dict[str, str],
+    path: Path = FREEZE_PATH,
+    series: str | None = None,
+) -> None:
+    """Mark ACTIVE row(s) SUPERSEDED and pin a replacement ACTIVE row.
 
     RESELECTION RULE: if a pinned series violates the split check, comment
     the old row out as ``# SUPERSEDED <csv>`` and append the new row, so the
-    file always ends with exactly one ACTIVE UCR row and keeps EXACTLY the
-    six schema columns.
+    file keeps EXACTLY the six schema columns. Pass ``series`` to supersede
+    only that row (multi-row registry); omit it for the legacy behavior of
+    superseding every ACTIVE row (single-row files).
     """
     if tuple(new_row.keys()) != FREEZE_COLUMNS:
         raise ValueError(f"new row must carry EXACTLY {FREEZE_COLUMNS}")
@@ -225,11 +248,17 @@ def supersede_freeze_row(new_row: dict[str, str], path: Path = FREEZE_PATH) -> N
     superseded = False
     for line in lines:
         if line.strip() and not line.startswith("#") and not line.startswith("series,"):
-            out.append("# SUPERSEDED " + line)
-            superseded = True
+            if series is None or line.split(",")[0] == series:
+                out.append("# SUPERSEDED " + line)
+                superseded = True
+            else:
+                out.append(line)
         else:
             out.append(line)
     if not superseded:
-        raise ValueError(f"no ACTIVE row to supersede in {path}")
+        raise ValueError(
+            f"no ACTIVE row to supersede in {path}"
+            + (f" for series {series!r}" if series is not None else "")
+        )
     out.append(",".join(new_row[c] for c in FREEZE_COLUMNS))
     path.write_text("\n".join(out) + "\n")
