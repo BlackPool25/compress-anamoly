@@ -4,6 +4,7 @@ Modular harness layout at repo root:
 
 - `harness/datasets/` — 4-morphology seeded generator + UCR loader with checksum/cache
 - `harness/codecs/` — R0 raw, R3 quantization, R4 symbolic
+| R4 SAX PAA=16 | PARKED — no code path; PAA window frozen at 8 (A=8) per R4 spec |
 - `harness/detectors/` — PCA, Isolation Forest, D4 direct-symbolic
 - `harness/metrics/` — frozen threshold evaluator, trailing alignment, VUS-PR
 - `harness/results/` — run outputs
