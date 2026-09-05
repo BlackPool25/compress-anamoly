@@ -1,1 +1,2 @@
 series,url,sha256,bytes,license,split_rule
+001_UCR_Anomaly_DISTORTED1sddb40_35000_52000_52620,https://raw.githubusercontent.com/ML-KULeuven/dtaianomaly/5d94855fdd5d6b4803797457886a1c498c171e16/data/UCR-time-series-anomaly-archive/001_UCR_Anomaly_DISTORTED1sddb40_35000_52000_52620.txt,4a9c39e6d2cbd819909df7d20cf553afa995daa3155611f9972960199973bca3,1356515,MIT mirror ML-KULeuven/dtaianomaly; data UCR Time Series Anomaly Archive Keogh et al. 2021,train=first 40% anomaly-free; test=last 60% holds exactly one contiguous labeled anomaly
