@@ -123,3 +123,53 @@ def test_fast_profile_flags():
     """--fast selects 1 seed, synth-only datasets, TCN epochs=2."""
     args = run_harness.parse_args(["--fast"])
     assert args.fast is True
+
+
+def test_jobs_flag_defaults_to_serial():
+    """--jobs defaults to 1 (serial); smoke stays fast without the flag."""
+    args = run_harness.parse_args([])
+    assert args.jobs == 1
+    args = run_harness.parse_args(["--jobs", "8"])
+    assert args.jobs == 8
+
+
+def test_invalid_jobs_raises_named_valueerror():
+    """--jobs 0 / negative raises ValueError naming the flag (never silent)."""
+    import tempfile
+    from pathlib import Path
+
+    for bad in ("0", "-2"):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "x.csv"
+            with pytest.raises(ValueError, match="--jobs"):
+                run_harness.main(["--smoke", "--jobs", bad, "--output", str(out)])
+
+
+def test_jobs_preserves_row_counts_smoke():
+    """Smoke under --jobs 2 still yields exactly 6 rows (serial order stable)."""
+    import csv
+
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "smoke_j.csv"
+        rc = run_harness.main(["--smoke", "--jobs", "2", "--output", str(out)])
+        assert rc == 0
+        with out.open(newline="") as f:
+            rows = list(csv.DictReader(f))
+        assert len(rows) == 6
+        assert {r["codec"] for r in rows} == {"R0", "Q8"}
+
+
+def test_serial_parallel_csv_byte_equal_fast():
+    """--fast --jobs 1 vs --jobs 2 CSVs are byte-identical (stable row order)."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        a = Path(tmp) / "a.csv"
+        b = Path(tmp) / "b.csv"
+        assert run_harness.main(["--fast", "--jobs", "1", "--output", str(a)]) == 0
+        assert run_harness.main(["--fast", "--jobs", "2", "--output", str(b)]) == 0
+        assert a.read_bytes() == b.read_bytes()

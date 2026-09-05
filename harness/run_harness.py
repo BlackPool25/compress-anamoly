@@ -82,6 +82,7 @@ import csv
 import platform
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -332,6 +333,21 @@ def run_cell(dataset: str, seed: int, codecs: list[str],
     return rows
 
 
+def _run_one_cell(job: tuple[str, int, tuple[str, ...], int]
+                ) -> tuple[list[dict], float]:
+    """Run one (dataset, seed) cell in a worker; top-level so picklable.
+
+    Each worker imports this module fresh (fork on Linux: copy-on-write,
+    no re-import cost) and fixes seeds per cell, so determinism holds.
+    torch threads=1 comes from the TCN module import in every worker.
+    Returns (rows, elapsed_s).
+    """
+    dataset, seed, codecs, tcn_epochs = job
+    t0 = time.perf_counter()
+    rows = run_cell(dataset, seed, list(codecs), tcn_epochs=tcn_epochs)
+    return rows, time.perf_counter() - t0
+
+
 def aggregate(rows: list[dict]) -> dict[str, list[dict]]:
     """Group per-seed rows by (dataset,codec,detector,path): mean + sample std."""
     groups: dict[tuple, list[dict]] = {}
@@ -379,12 +395,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="skip UCR; fail loudly if UCR cache is missing")
     ap.add_argument("--output", default=str(DEFAULT_OUT),
                     help="CSV output path")
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="parallel workers over (dataset, seed) cells; "
+                    "1 = serial (default). Plan-gate runs use 8.")
     return ap.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     """Run the matrix, write the 14-col CSV, print per-dataset tables."""
     args = parse_args(argv)
+    if args.jobs < 1:
+        raise ValueError(f"--jobs must be >= 1, got {args.jobs}")
     # TIME GATE rung (frozen ladder): Rung1 = epochs 5 / windows 4000
     # (Todo 10: Rung0 epochs=10 blew the 360 s budget at 647.9 s; batched
     # score alone reached 563.4 s — still red, so exactly one rung applies).
@@ -442,11 +463,30 @@ def main(argv: list[str] | None = None) -> int:
     rows: list[dict] = []
     t_start = time.perf_counter()
     per_ds: dict[str, float] = {}
-    for seed in seeds:
-        for ds in datasets:
-            t_cell = time.perf_counter()
-            rows.extend(run_cell(ds, seed, codecs, tcn_epochs=tcn_epochs))
-            per_ds[ds] = per_ds.get(ds, 0.0) + time.perf_counter() - t_cell
+    # Parallel unit = one (dataset, seed) cell: independent by construction
+    # (seeds fixed per cell, no shared state). Default executor context is
+    # fork on Linux: workers inherit the imported module copy-on-write, so
+    # no re-import cost; spawn would pay a full re-import per worker.
+    # Results are re-emitted in serial (seed, dataset) order, so CSV row
+    # order is STABLE regardless of --jobs. Single-cell runs stay serial
+    # (no pool overhead — smoke stays seconds-fast).
+    cell_jobs = [(ds, seed, tuple(codecs), tcn_epochs)
+                 for seed in seeds for ds in datasets]
+    if args.jobs == 1 or len(cell_jobs) == 1:
+        for seed in seeds:
+            for ds in datasets:
+                t_cell = time.perf_counter()
+                rows.extend(run_cell(ds, seed, codecs, tcn_epochs=tcn_epochs))
+                per_ds[ds] = per_ds.get(ds, 0.0) + time.perf_counter() - t_cell
+    else:
+        with ProcessPoolExecutor(max_workers=args.jobs) as ex:
+            # futures submitted in serial order; indexed re-emission below
+            # keeps row order deterministic (completion order is ignored).
+            futs = [ex.submit(_run_one_cell, j) for j in cell_jobs]
+            cell_rows = [f.result() for f in futs]
+        for (ds, _seed, _c, _e), (crows, el) in zip(cell_jobs, cell_rows):
+            rows.extend(crows)
+            per_ds[ds] = per_ds.get(ds, 0.0) + el
     wall = time.perf_counter() - t_start
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
