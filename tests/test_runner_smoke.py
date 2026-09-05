@@ -17,13 +17,18 @@ EXPECTED_HEADER = [
 
 def test_runner_smoke() -> None:
     """Run --smoke and assert header == 14 expected names + row count >= 4."""
-    r = subprocess.run(
-        [sys.executable, "harness/run_harness.py", "--smoke"],
-        cwd=ROOT, capture_output=True, text=True, timeout=600,
-    )
-    assert r.returncode == 0, f"--smoke failed: {r.stderr[-2000:]}"
-    assert "Spike" in r.stdout  # per-dataset Markdown table, never pooled
-    with OUT.open(newline="") as f:
-        rows = list(csv.DictReader(f))
-        assert rows and list(rows[0].keys()) == EXPECTED_HEADER
-    assert len(rows) >= 4  # spike x R0->[PCA,IF] + Q8->[PCA,IF]
+    orig = OUT.read_bytes() if OUT.is_file() else None
+    try:
+        r = subprocess.run(
+            [sys.executable, "harness/run_harness.py", "--smoke"],
+            cwd=ROOT, capture_output=True, text=True, timeout=600,
+        )
+        assert r.returncode == 0, f"--smoke failed: {r.stderr[-2000:]}"
+        assert "Spike" in r.stdout  # per-dataset Markdown table, never pooled
+        with OUT.open(newline="") as f:
+            rows = list(csv.DictReader(f))
+            assert rows and list(rows[0].keys()) == EXPECTED_HEADER
+        assert len(rows) >= 4  # spike x R0->[PCA,IF] + Q8->[PCA,IF]
+    finally:
+        if orig is not None:
+            OUT.write_bytes(orig)

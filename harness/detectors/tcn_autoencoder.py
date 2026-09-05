@@ -127,6 +127,7 @@ class _TCNNet(nn.Module):
     """Exact frozen arch; 64 -> 32 -> 16 -> 32 -> 64."""
 
     def __init__(self) -> None:
+        """Initialize frozen 1D TCN encoder-decoder network layers."""
         super().__init__()
         self.enc = nn.Sequential(
             nn.Conv1d(1, 16, kernel_size=3, stride=2, padding=1),
@@ -143,6 +144,7 @@ class _TCNNet(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass through encoder and transposed-conv decoder."""
         return self.dec(self.enc(x))
 
 

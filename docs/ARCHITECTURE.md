@@ -50,6 +50,14 @@ Columns: decision | value | rationale | reversible-by.
 | Chaos noise order | full-length N(0,0.05) then segment overwritten by second `rng.normal` call | Order-dependent seeding; tests pin behavior, not stream | Nothing |
 | Drift ramp | `0.003*(t-1200)` on [1200:1700], max delta +1.5 | Exact formula; endpoint tolerance ±0.15 is noise-driven | Nothing |
 | Rhythm base | f0=0.02 frozen (T0=50); anomaly halves frequency on [1300:1450] | Exact formula; zero-crossing period test on equal-length clean window [800:950] | Nothing |
+| Gorilla format/band | count u32LE + first f32LE + bitpacked XOR, band [0.90, 1.00] | Bit-exact lossless floating-point XOR; band holds under IEEE 754 LE header | Plan amendment + tests |
+| Deadband format/bands | [n u32LE][first f32LE][(idx u32LE, val f32LE)*], eps in {0.01, 0.02}, linear interp decode; R2a [0.70, 1.00], R2b [1.10, 1.50] | Error-bounded downsampling; linear interpolation reconstruction; 032 biomedical domain carve-out | Plan amendment + tests |
+| Q2 format/band | 8-byte [min,max] LE header + 2-bit packed codes, band [14.0, 17.0] | Extreme 4-level quantization with odd-N alignment trim | Plan amendment + tests |
+| Bypass SAX params | PAA=8, alphabet=8, theta=99.5th pct nominal chunk RMS, marker 0xFF + f16 peak + u8 offset | Preserves spike impulses with min realized ratio >= 20.0x; D4 hybrid scoring with BYPASS_MARGIN=0.5 | Plan amendment + tests |
+| TCN architecture | Conv1D(1->16,k3,s2,p1) -> Conv1D(16->8,k3,s2,p1) -> ConvT(8->16) -> ConvT(16->1), 905 params | Strictly < 12k params; <=10 epochs Adam lr=1e-3, CPU-only, deterministic flags; trained once per (dataset,seed) on R0-train | Plan amendment + tests |
+| Matrix routing P2 | 16 datasets x 9 codec rows x detectors x 5 seeds = 1845 cells | 4 synth + 10 UCR + 2 NASA; Path A (PCA, IF, TCN) + Path B (D4, bypass-hybrid) + Drift R4-decode | Plan amendment + tests |
+| Seed budget P2 | 42, 43, 44, 45, 46 | 5 seeds, CPU-only determinism verified by rerun cmp | Widening seeds |
+| Torch CPU pin | torch==2.4.1 CPU | Pinned via explicit pytorch-cpu uv index; zero CUDA runtime deps | pyproject.toml pin update |
 
 ## PARKED register
 
@@ -88,6 +96,7 @@ marked per plan citation, plus where it is frozen in this repo.
 | METIS-F16 | Docs todo changes no behavior (docstrings + docs + sweep only) | this commit scope |
 | METIS-F17 | Chaos+UCR reported but excluded from bump/cliff asserts; exact matrix | runner matrix, eval gates |
 | METIS-F18 | PA-F1 / affiliation / VUS-ROC ban | PA-ban grep, `docs/METRICS.md` gameability note |
+| PLAN-PHASE2 | compress-phase2-ladder work plan execution | `.omo/plans/compress-phase2-ladder.md`, 1845-cell matrix, Gates A-D |
 
 MASTER-REPORT CONSTRAINTS (Master PDF section numbers per plan citation;
 no section numbers are invented here):
@@ -102,3 +111,47 @@ no section numbers are invented here):
 | Boring-flat honest | gate (e): HONEST NO-KNEE exits 0 instead of forcing a knee |
 | Hidden-knee audit | `build_freeze_audit`, report-only, never gates |
 | RMSE-only freeze | `rmse` column; no PRD (normalized RMSE adds no decision signal) |
+
+## Appendix: Phase-2 Cell Routing Matrix
+
+The Phase-2 test rig covers 16 datasets across 9 codec rows and 4 detectors over 5 seeds (42–46), yielding 1,845 total evaluation rows:
+
+- **Datasets (16):**
+  - Synthetic (4): `Spike`, `Rhythm`, `Drift`, `Chaos`
+  - UCR Archive (10): `001_1sddb40`, `012_ECG2`, `019_GP711Marker`, `032_InternalBleeding4`, `043_Mesoplodon`, `044_PowerDemand1`, `045_PowerDemand2`, `048_TkeepFifthMARS`, `078_resperation1`, `089_tiltAPB1`
+  - NASA Telemanom (2): `SMAP-P-1`, `MSL-T-4`
+- **Codec Rows (9):** `R0` (lossless), `R1` (Gorilla), `R2a` (Deadband $\epsilon=0.01$), `R2b` (Deadband $\epsilon=0.02$), `Q8` (8-bit), `Q4` (4-bit), `Q2` (2-bit), `R4` (SAX PAA=8), `R4-bypass` (Energy-Bypass SAX).
+- **Detector Paths:**
+  - **Path A (Decoded floats):** `PCA`, `IF`, `TCN` across `R0`, `R1`, `R2a`, `R2b`, `Q8`, `Q4`, `Q2` (21 cells per seed/dataset). On `Drift` only, `R4-decode` with `PCA` is run as a 22nd cell.
+  - **Path B (Direct symbols):** `D4` on `R4` tokens and `D4-hybrid` on `R4-bypass` tokens (2 cells per seed/dataset).
+- **Total per dataset:** 23 cells $\times$ 5 seeds = 115 rows (24 cells $\times$ 5 seeds = 120 rows on `Drift`), totaling $(15 \times 23 + 24) \times 5 = 1,845$ rows.
+
+## Phase-2 Architecture Recommendations (Derived from Phase-1 Evidence)
+
+Phase-1 empirical results establish three definitive architectural directives:
+
+1. **Morphology Gate (Energy / Amplitude Bypass):**
+   - *Observation:* SAX vocabulary saturates at extreme amplitudes (e.g. bin 7 for
+     values $> +1.15\sigma$). Both nominal peaks and $+3.5\sigma$ spikes map to the
+     same top symbol, yielding identical $7 \to 7$ transitions in D4.
+   - *Architecture:* Upstream of symbolic encoding, add a lightweight Morphology
+     Bypass (tracking chunk energy $\|x\|_2$ or running peak-to-peak delta).
+     Amplitude anomalies fire the bypass immediately without requiring decode;
+     symbolic token streams are reserved for cadence and rhythm tracking.
+
+2. **Grammar Induction for Cadence / Rhythm (Beyond 1st-Order Markov):**
+   - *Observation:* D4 on $32\times$ compressed tokens beat uncompressed PCA on
+     Event-F1 by +20pp ($0.9121$ vs $0.7133$) with zero decode latency.
+   - *Architecture:* Extend 1st-order Markov transitions ($P(s_t \mid s_{t-1})$)
+     to variable-length grammar induction (e.g. Sequitur / hierarchical n-gram
+     trees). This captures multi-token rhythmic motifs and phase slips directly
+     in the compressed domain.
+
+3. **First-Difference Encoding for Drift:**
+   - *Observation:* Uniform 4-bit quantization (Q4) collapses on drift because
+     monotonic baseline shifts stretch the 16 quantization levels across a wide
+     dynamic range, quantizing subtle gradients into coarse flat plateaus.
+   - *Architecture:* Apply first-difference (delta) encoding prior to quantization
+     for drifting series, converting monotonic ramps into constant offsets and
+     preserving local gradient resolution.
+

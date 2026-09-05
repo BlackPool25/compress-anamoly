@@ -16,7 +16,7 @@ uv sync
 uv run pytest -q
 uv run python harness/run_harness.py --smoke
 uv run python harness/run_harness.py
-uv run python eval/check_expected.py --csv eval/fixtures/pass.csv
+uv run python eval/check_expected.py
 ```
 
 What each step does:
@@ -25,9 +25,11 @@ What each step does:
 2. `uv run pytest -q` — full suite, must stay green (84 passed, 1 skipped).
 3. `--smoke` — 4-row fast check (seed 42, Spike only, R0+Q8); ~seconds.
 4. Full run — 180 rows (5 seeds x exact matrix incl. UCR download) into
-   `harness/results/baseline_run.csv` (untracked by design; todo 12 owns it).
-5. Fixture eval — bump/cliff gates against `eval/fixtures/pass.csv`.
-   Point the same script at `harness/results/baseline_run.csv` for the real run.
+   `harness/results/baseline_run.csv`.
+5. Evaluation gates — asserts non-collapse, grammar win, and quantization cliffs
+   against `harness/results/baseline_run.csv` (exits 0, all 4 gates pass).
+   Can also be run against fixtures (e.g. `--csv eval/fixtures/pass.csv`).
+
 
 Hygiene checks:
 

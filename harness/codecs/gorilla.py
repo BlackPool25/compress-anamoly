@@ -52,6 +52,7 @@ class _BitWriter:
     """MSB-first bit accumulator over a bytearray."""
 
     def __init__(self) -> None:
+        """Initialize an empty bit accumulator buffer."""
         self.buf = bytearray()
         self.acc = 0
         self.nbits = 0
@@ -81,6 +82,7 @@ class _BitReader:
     """MSB-first bit reader; overruns raise ValueError (never silent)."""
 
     def __init__(self, body: bytes) -> None:
+        """Initialize bit reader over bytes payload."""
         self.body = body
         self.pos = 0  # bit position
         self.nbits = len(body) * 8
