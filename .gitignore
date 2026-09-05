@@ -1,0 +1,8 @@
+.omo/evidence/
+.serena/
+data/cache/
+__pycache__/
+*.pyc
+.venv/
+!.omo/plans/
+!.omo/drafts/

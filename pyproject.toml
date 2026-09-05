@@ -1,0 +1,25 @@
+[project]
+name = "compress-anomaly-harness"
+version = "0.1.0"
+description = "Phase 1 research harness: does compression preserve anomaly signal?"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy==1.26.*",
+    "scipy>=1.13",
+    "scikit-learn>=1.4",
+    "tabulate>=0.9",
+    "vus==0.0.6",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["harness"]
