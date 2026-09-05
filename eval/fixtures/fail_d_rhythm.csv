@@ -1,0 +1,8 @@
+dataset,codec,payload_bytes,realized_ratio,detector,path,seed,point_f1,event_f1,pr_auc,vus_pr,tau,rmse,gpu_model
+Spike,R0,1200,1.0,IF,A,42,0.42,0.40,0.55,0.50,0.81,0.001,cpu
+Spike,Q8,302,3.98,IF,A,42,0.43,0.41,0.56,0.51,0.81,0.02,cpu
+Drift,R0,1200,1.0,IF,A,42,0.60,0.55,0.70,0.65,0.75,0.001,cpu
+Drift,Q4,152,7.9,IF,A,42,0.30,0.28,0.45,0.40,0.75,0.05,cpu
+Drift,R4-decode,250,19.2,PCA,A,42,0.15,0.10,0.30,0.25,0.70,0.08,cpu
+Rhythm,R0,1200,1.0,PCA,A,42,0.50,0.48,0.62,0.58,0.68,0.001,cpu
+Rhythm,R4,250,19.2,D4,B,42,0.30,0.28,0.40,0.35,0.60,,cpu
