@@ -385,7 +385,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     """Run the matrix, write the 14-col CSV, print per-dataset tables."""
     args = parse_args(argv)
-    tcn_epochs = 10
+    # TIME GATE rung (frozen ladder): Rung1 = epochs 5 / windows 4000
+    # (Todo 10: Rung0 epochs=10 blew the 360 s budget at 647.9 s; batched
+    # score alone reached 563.4 s — still red, so exactly one rung applies).
+    tcn_epochs = 5
     if args.smoke:
         seeds = [42]
         datasets = ["Spike"]

@@ -65,6 +65,13 @@ MAX_EPOCHS: int = 10
 #: Hard param ceiling, asserted at init.
 MAX_PARAMS: int = 12_000
 
+#: Score-time forward chunk size (Todo 10): ``_window_sse`` runs one batched
+#: forward per chunk of at most this many windows. A single full-tensor
+#: forward hits a slow oneDNN path (~4.6x slower on 60k windows); 1024-chunks
+#: are bit-identical to it (max-abs-diff == 0.0, seeds 42/43). Chunking adds
+#: no RNG consumption and no thread-config change (eval + no_grad as before).
+SCORE_BATCH_WINDOWS: int = 1024
+
 #: Frozen train-window cap (Todo 8): ``fit`` keeps at most this many
 #: windows via :func:`frozen_subsample_indices`.
 MAX_TRAIN_WINDOWS: int = 4000
@@ -202,12 +209,22 @@ class TCNAutoencoder(BaseDetector):
 
     @torch.no_grad()
     def _window_sse(self, t: torch.Tensor) -> np.ndarray:
-        """Per-window SSE of the frozen net (train-normalized space)."""
+        """Per-window SSE of the frozen net (train-normalized space).
+
+        Windows run in chunks of at most ``SCORE_BATCH_WINDOWS`` (one batched
+        forward per chunk, concatenated); trailing alignment + train-median
+        fill in :meth:`score` are untouched.
+        """
         self._net.eval()
-        recon, pad = _pad_to_mult4(self._net(_pad_to_mult4(t)[0]))
-        if pad:
-            recon = recon[..., : t.shape[-1]]
-        return torch.sum((t - recon) ** 2, dim=(1, 2)).cpu().numpy()
+        parts = []
+        for i in range(0, t.shape[0], SCORE_BATCH_WINDOWS):
+            chunk = t[i : i + SCORE_BATCH_WINDOWS]
+            recon, pad = _pad_to_mult4(self._net(_pad_to_mult4(chunk)[0]))
+            if pad:
+                recon = recon[..., : chunk.shape[-1]]
+            parts.append(
+                torch.sum((chunk - recon) ** 2, dim=(1, 2)).cpu().numpy())
+        return np.concatenate(parts)
 
     def fit(self, x_train: np.ndarray) -> None:
         """Train once on R0-train windows; freeze norm + median fill."""
