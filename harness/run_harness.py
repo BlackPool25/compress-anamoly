@@ -273,12 +273,41 @@ def main(argv: list[str] | None = None) -> int:
         datasets = list(DATASETS)
         codecs = ["R0", "Q8", "Q4", "R4"]
     if args.offline and "UCR" in datasets:
-        if not cache_path(SERIES_NAME).is_file():
-            raise RuntimeError(
-                f"offline and no UCR cache at {cache_path(SERIES_NAME)}; "
-                "refusing to substitute synthetic data")
-        print("OFFLINE: skipping UCR dataset (no network fetch)", file=sys.stderr)
-        datasets = [d for d in datasets if d != "UCR"]
+        from harness.datasets.nasa_loader import train_cache_path
+        from harness.datasets.ucr_loader import read_freeze_rows
+
+        rows = read_freeze_rows()
+        missing = [
+            r["series"]
+            for r in rows
+            if not cache_path(r["series"]).is_file()
+            or (
+                r["series"] in ("SMAP-P-1", "MSL-T-4")
+                and not train_cache_path(r["series"]).is_file()
+            )
+        ]
+        for r in rows:
+            extra = (
+                f" + {train_cache_path(r['series'])}"
+                if r["series"] in ("SMAP-P-1", "MSL-T-4")
+                else ""
+            )
+            print(
+                f"OFFLINE: {'CACHED' if r['series'] not in missing else 'MISSING'} "
+                f"{r['series']}{extra}",
+                file=sys.stderr,
+            )
+        if missing:
+            print(
+                f"OFFLINE: {len(missing)} uncached series, refusing to "
+                f"substitute synthetic data: {missing}",
+                file=sys.stderr,
+            )
+        if any(
+            m not in ("SMAP-P-1", "MSL-T-4") for m in missing
+        ) or not cache_path(SERIES_NAME).is_file():
+            print("OFFLINE: skipping UCR dataset (no network fetch)", file=sys.stderr)
+            datasets = [d for d in datasets if d != "UCR"]
     rows: list[dict] = []
     for seed in seeds:
         for ds in datasets:

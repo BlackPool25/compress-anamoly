@@ -7,11 +7,15 @@ Phase A pin (verified 2026-09-05 by re-download + re-hash + byte-compare)::
     sha256 = 4a9c39e6...9973bca3 (see SERIES_SHA256)
     bytes  = 1356515
 
-The series file is one float per line; the single labeled anomaly interval
-``[ANOMALY_START, ANOMALY_END)`` is encoded in the file name, following the
-UCR Time Series Anomaly Archive convention (Wu & Keogh 2021). The bytes are
-mirrored verbatim from the archive by the ML-KULeuven/dtaianomaly repo; the
-URL pins an immutable commit so the hash cannot drift.
+Phase 2 registry (Todo 2): ``load_series(name)`` serves all 10 UCR rows of
+``dataset-freeze.csv``. Row 1 is the mirror file above (LF bytes, fetched
+directly). Rows 2-10 share the official UCR archive zip URL + zip
+SHA-256/bytes; ``series`` names the zip member (``<series>.txt``, CRLF
+verbatim). Per-series cache keys stay extensionless (``data/cache/<name>``);
+the source zip is cached once at ``data/cache/<zip basename>``. Member
+bytes/hashes below are frozen from the Todo 1 evidence log
+(``task-1-downloads.log`` section 3); the six-column freeze schema has no
+member column, so this table is the member-truth copy.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ import io
 import re
 import urllib.error
 import urllib.request
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -63,6 +68,41 @@ ROOT = Path(__file__).resolve().parents[2]
 CACHE_DIR = ROOT / "data" / "cache"
 FREEZE_PATH = ROOT / "dataset-freeze.csv"
 
+# Frozen zip-member truth (Todo 1 evidence log, section 3): CRLF member
+# bytes + SHA-256 for the 9 official-archive members. Row 1 (mirror, LF)
+# verifies against its freeze-row cells instead, so it has no entry here.
+MEMBER_SHA256: dict[str, str] = {
+    "019_UCR_Anomaly_DISTORTEDGP711MarkerLFM5z1_5000_6168_6212":
+        "d5ef58edd75915cd1cfb88368905186281e25eb7587e2c5cd28a44f4a3e2fb8f",
+    "032_UCR_Anomaly_DISTORTEDInternalBleeding4_1000_4675_5033":
+        "90bb58ed2d8c100486d6ab744eb385960583f882a0c185cdd86ba81a588a278e",
+    "044_UCR_Anomaly_DISTORTEDPowerDemand1_9000_18485_18821":
+        "a7ca3d07ad8d56e274197c5f617da49fb0176c438add92d58a1a97aaf0d8280d",
+    "043_UCR_Anomaly_DISTORTEDMesoplodonDensirostris_10000_19280_19440":
+        "241271e6b255d97184928478470632deaa4525a0bd005f4f4f2b87ed4860b103",
+    "048_UCR_Anomaly_DISTORTEDTkeepFifthMARS_3500_5988_6085":
+        "a93a5fa9a5c95f1a3e975f1bbc7cf8f6adac879b6d95d7605337b8e38798ae7e",
+    "012_UCR_Anomaly_DISTORTEDECG2_15000_16000_16100":
+        "918236c9ecd8e65f0e61df7209c5874b811657177de2ea982ef98c6f3ac6172f",
+    "078_UCR_Anomaly_DISTORTEDresperation1_100000_110260_110412":
+        "b2c72cf631268a469e90106a63efb911b499aceb7ec7149d48b692bb7f1e7a41",
+    "045_UCR_Anomaly_DISTORTEDPowerDemand2_14000_23357_23717":
+        "39e72cdcd0c18022f06012b49020bdc01bb0424a12a78f6fb1eeee7c4ff65e9e",
+    "089_UCR_Anomaly_DISTORTEDtiltAPB1_100000_114283_114350":
+        "4f4984e84ed00e12c9a6c4ad3561ce0eebaa864266fd9baab666745e1cdae71c",
+}
+MEMBER_BYTES: dict[str, int] = {
+    "019_UCR_Anomaly_DISTORTEDGP711MarkerLFM5z1_5000_6168_6212": 216000,
+    "032_UCR_Anomaly_DISTORTEDInternalBleeding4_1000_4675_5033": 131778,
+    "044_UCR_Anomaly_DISTORTEDPowerDemand1_9000_18485_18821": 538758,
+    "043_UCR_Anomaly_DISTORTEDMesoplodonDensirostris_10000_19280_19440": 444006,
+    "048_UCR_Anomaly_DISTORTEDTkeepFifthMARS_3500_5988_6085": 204012,
+    "012_UCR_Anomaly_DISTORTEDECG2_15000_16000_16100": 540000,
+    "078_UCR_Anomaly_DISTORTEDresperation1_100000_110260_110412": 3600000,
+    "045_UCR_Anomaly_DISTORTEDPowerDemand2_14000_23357_23717": 538758,
+    "089_UCR_Anomaly_DISTORTEDtiltAPB1_100000_114283_114350": 2340018,
+}
+
 _NAME_RE = re.compile(r"_(\d+)_(\d+)_(\d+)\.txt$")
 
 
@@ -81,6 +121,139 @@ def download_bytes(url: str = SERIES_URL) -> bytes:
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
             last = exc
     raise ConnectionError(f"download failed after {MAX_RETRIES} retries: {url}: {last}")
+
+
+def download_file(url: str, dest: Path) -> Path:
+    """Download URL to dest with Range-resume + retries; return dest.
+
+    A partial dest is resumed via ``Range: bytes=<have>-``; if the server
+    answers 200 instead of 206 the transfer restarts from zero. Shared by
+    the UCR zip fetch and the NASA .npy fetches.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    last: Exception | None = None
+    for _ in range(MAX_RETRIES + 1):
+        have = dest.stat().st_size if dest.is_file() else 0
+        try:
+            req = urllib.request.Request(
+                url, headers={"Range": f"bytes={have}-"} if have else {}
+            )
+            with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+                resume = have and getattr(resp, "status", 200) == 206
+                mode = "ab" if resume else "wb"
+                with open(dest, mode) as f:
+                    while True:
+                        chunk = resp.read(1 << 20)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+            return dest
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            last = exc
+    raise ConnectionError(
+        f"download failed after {MAX_RETRIES} retries: {url}: {last}"
+    )
+
+
+def _row_for(name: str) -> dict[str, str]:
+    """Return the ACTIVE freeze row for a series; ValueError names unknowns."""
+    for row in read_freeze_rows():
+        if row["series"] == name:
+            return row
+    raise ValueError(
+        f"unknown series {name!r}: no ACTIVE row in {FREEZE_PATH}; "
+        "refusing to substitute synthetic data"
+    )
+
+
+def _is_zip_row(row: dict[str, str]) -> bool:
+    """True when the row pins the official UCR archive zip (member load)."""
+    return row["url"].endswith(".zip")
+
+
+def _expected(name: str, row: dict[str, str]) -> tuple[str, int]:
+    """Return the (sha256, bytes) the per-series cache file must match.
+
+    Mirror rows verify against their freeze-row cells; zip-member rows
+    verify against the frozen MEMBER_* table (the row cells pin the zip).
+    """
+    if _is_zip_row(row):
+        try:
+            return MEMBER_SHA256[name], MEMBER_BYTES[name]
+        except KeyError:
+            raise ValueError(
+                f"no frozen member hash for series {name!r}; "
+                "reselect via supersede, never substitute"
+            ) from None
+    return row["sha256"], int(row["bytes"])
+
+
+def _verify_size(raw: bytes, expected: int, name: str) -> None:
+    """Raise ValueError naming the series when the byte count mismatches."""
+    if len(raw) != expected:
+        raise ValueError(
+            f"size mismatch for series {name!r}: "
+            f"expected {expected} bytes, got {len(raw)}"
+        )
+
+
+def _checked(raw: bytes, sha256: str, nbytes: int, name: str) -> bytes:
+    """Size-then-hash verify; ValueError names the series on any mismatch."""
+    _verify_size(raw, nbytes, name)
+    try:
+        verify_sha256(raw, sha256)
+    except ValueError as exc:
+        raise ValueError(f"series {name!r}: {exc}") from None
+    return raw
+
+
+def _extract_member(zip_path: Path, name: str) -> bytes:
+    """Return the raw bytes of the archive member ending in ``<name>.txt``.
+
+    Members live under ``.../UCR_Anomaly_FullData/<name>.txt`` inside the
+    official zip, so the match is by path suffix; zero or 2+ hits raise
+    ValueError naming the series (never a silent wrong-member read).
+    """
+    with zipfile.ZipFile(zip_path) as zf:
+        hits = [n for n in zf.namelist() if n.endswith(name + ".txt")]
+        if len(hits) != 1:
+            raise ValueError(
+                f"expected exactly 1 member ending in {(name + '.txt')!r} "
+                f"in archive {zip_path}, found {len(hits)}"
+            )
+        return zf.read(hits[0])
+
+
+def _ensure_zip(row: dict[str, str], name: str) -> Path:
+    """Return the verified source-zip path, downloading with resume if needed.
+
+    A cached zip that fails the row SHA-256/bytes check is deleted and
+    fetched once more; a second failure raises ValueError naming the row.
+    Offline without cache raises RuntimeError naming the series.
+    """
+    dest = CACHE_DIR / row["url"].rsplit("/", 1)[-1]
+    sha, nbytes = row["sha256"], int(row["bytes"])
+    if dest.is_file():
+        try:
+            _checked(dest.read_bytes(), sha, nbytes, row["url"])
+            return dest
+        except ValueError:
+            dest.unlink()
+    try:
+        download_file(row["url"], dest)
+    except (ConnectionError, OSError, urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError(
+            f"offline and no cache: cannot fetch series {name!r} "
+            f"({row['url']}, cache miss at {dest}); "
+            f"refusing to substitute synthetic data: {exc}"
+        ) from exc
+    raw = dest.read_bytes()
+    try:
+        _checked(raw, sha, nbytes, row["url"])
+    except ValueError:
+        dest.unlink()
+        raise
+    return dest
 
 
 def verify_sha256(data: bytes, expected: str = SERIES_SHA256) -> None:
@@ -110,6 +283,10 @@ def parse_series(raw: bytes, series: str = SERIES_NAME) -> TimeSeriesSample:
     x = np.loadtxt(io.BytesIO(raw), dtype=float)
     if x.ndim != 1 or x.size == 0:
         raise ValueError(f"expected a non-empty 1-D series, got shape {x.shape}")
+    if not np.isfinite(x).all():
+        raise ValueError(
+            f"non-finite values in series {series!r}; refusing to parse"
+        )
     n = int(x.size)
     cut = int(0.4 * n)
     start, stop = _anomaly_span(series)
@@ -146,40 +323,36 @@ def parse_series(raw: bytes, series: str = SERIES_NAME) -> TimeSeriesSample:
     )
 
 
-def load_series(
-    name: str = SERIES_NAME,
-    url: str = SERIES_URL,
-    sha256: str = SERIES_SHA256,
-) -> TimeSeriesSample:
-    """Load the pinned series, cache-first at ``data/cache/<name>``.
+def load_series(name: str = SERIES_NAME) -> TimeSeriesSample:
+    """Load a registry series, cache-first at ``data/cache/<name>``.
 
-    A cached file is hash-verified (mismatch deletes the file and raises).
-    Without cache the series is downloaded, verified, then cached. Offline
-    without cache raises RuntimeError loudly; synthetic data is never
-    substituted.
+    Mirror rows download the series file directly; zip rows fetch the
+    source zip once (resumed) and extract the ``<name>.txt`` member. A
+    cached file is size-then-hash verified (mismatch deletes the file and
+    raises ValueError naming the series). Offline without cache raises
+    RuntimeError loudly; synthetic data is never substituted. Parsed
+    ``x`` is float64; the runner casts to float32 immediately after load.
     """
+    row = _row_for(name)
+    sha256, nbytes = _expected(name, row)
     path = cache_path(name)
     if path.is_file():
-        raw = path.read_bytes()
         try:
-            verify_sha256(raw, sha256)
+            raw = _checked(path.read_bytes(), sha256, nbytes, name)
         except ValueError:
             path.unlink()
             raise
-        if len(raw) != SERIES_BYTES and name == SERIES_NAME and url == SERIES_URL:
-            path.unlink()
-            raise ValueError(
-                f"size mismatch: expected {SERIES_BYTES} bytes, got {len(raw)}"
-            )
         return parse_series(raw, series=name)
-    try:
-        raw = download_bytes(url)
-    except (ConnectionError, OSError, urllib.error.URLError, TimeoutError) as exc:
-        raise RuntimeError(
-            f"offline and no cache: cannot fetch {url} "
-            f"(cache miss at {path}); refusing to substitute synthetic data: {exc}"
-        ) from exc
-    verify_sha256(raw, sha256)
+    if _is_zip_row(row):
+        raw = _checked(_extract_member(_ensure_zip(row, name), name), sha256, nbytes, name)
+    else:
+        try:
+            raw = _checked(download_bytes(row["url"]), sha256, nbytes, name)
+        except (ConnectionError, OSError, urllib.error.URLError, TimeoutError) as exc:
+            raise RuntimeError(
+                f"offline and no cache: cannot fetch {row['url']} "
+                f"(cache miss at {path}); refusing to substitute synthetic data: {exc}"
+            ) from exc
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path.write_bytes(raw)
     return parse_series(raw, series=name)
