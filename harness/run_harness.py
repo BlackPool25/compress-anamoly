@@ -162,6 +162,7 @@ def run_cell(dataset: str, seed: int, codecs: list[str]) -> list[dict]:
 
     def path_a(codec_name: str, payload: bytes, decoded: np.ndarray,
                raw_test: np.ndarray, labels: np.ndarray, ratio: float) -> None:
+        """Score one decode with PCA+IF under the frozen taus; append path-A rows."""
         dec = _align_len(decoded, raw_test.shape[0])
         rmse = _rmse(dec, raw_test)
         for det_name in ("PCA", "IF"):
@@ -241,6 +242,7 @@ def print_tables(agg: dict[str, list[dict]]) -> None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse CLI flags (--smoke, --seeds, --offline, --output)."""
     ap = argparse.ArgumentParser(description="Phase-1 compression matrix runner.")
     ap.add_argument("--smoke", action="store_true",
                     help="fast check: seed 42, Spike only, R0+Q8, PCA+IF")
@@ -254,6 +256,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the matrix, write the 14-col CSV, print per-dataset tables."""
     args = parse_args(argv)
     if args.smoke:
         seeds = [42]

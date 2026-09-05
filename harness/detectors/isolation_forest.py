@@ -18,6 +18,7 @@ class IsolationForestDetector(BaseDetector):
     """
 
     def __init__(self, seed: int) -> None:
+        """Seed the IF(100, 0.01) model and mark it unfitted."""
         self.seed = seed
         self._if = IsolationForest(
             n_estimators=100, contamination=0.01, random_state=seed
@@ -26,12 +27,14 @@ class IsolationForestDetector(BaseDetector):
         self._fitted = False
 
     def fit(self, x_train: np.ndarray) -> None:
+        """Fit IF on nominal windows; cache the train score median fill."""
         w = sliding_windows(x_train, WINDOW)
         self._if.fit(w)
         self._train_median = float(np.median(-self._if.score_samples(w)))
         self._fitted = True
 
     def score(self, x_test: np.ndarray) -> np.ndarray:
+        """-score_samples mapped to points via trailing alignment (train-median fill)."""
         if not self._fitted:
             raise RuntimeError("IsolationForestDetector.score called before fit")
         n = int(np.asarray(x_test).size)
